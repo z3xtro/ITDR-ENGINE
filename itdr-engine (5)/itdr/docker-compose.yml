@@ -1,0 +1,42 @@
+# ITDR engine + Redis shared-state backend.
+#
+#   docker compose up                      # passive service, demo telemetry
+#   docker compose run --rm itdr \
+#       python -m itdr.tui                  # live dashboard (needs the TTY
+#                                           # bindings below to show color)
+#
+# Live containment (DANGER — acts on real accounts):
+#   ENFORCEMENT_MODE=ACTIVE_ENFORCEMENT \
+#   IDP=okta OKTA_ORG_URL=... OKTA_API_TOKEN=... docker compose up
+services:
+  redis:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+
+  itdr:
+    build: .
+    depends_on:
+      redis:
+        condition: service_healthy
+    # Preserve an interactive coloured terminal for the rich/textual UIs.
+    tty: true
+    stdin_open: true
+    environment:
+      FORCE_COLOR: "1"
+      TERM: xterm-256color
+      STATE_BACKEND: redis
+      REDIS_URL: redis://redis:6379/0
+      IDP: ${IDP:-sim}
+      POLL_INTERVAL: ${POLL_INTERVAL:-60}
+      # Containment safety: DRY_RUN unless explicitly overridden.
+      ENFORCEMENT_MODE: ${ENFORCEMENT_MODE:-DRY_RUN}
+      ENFORCE_RISK_THRESHOLD: ${ENFORCE_RISK_THRESHOLD:-100}
+      OKTA_ORG_URL: ${OKTA_ORG_URL:-}
+      OKTA_API_TOKEN: ${OKTA_API_TOKEN:-}
+      ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
+      ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
+      ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+    restart: unless-stopped
