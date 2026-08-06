@@ -9,6 +9,7 @@
 | Impossible Travel | [T1078](https://attack.mitre.org/techniques/T1078/) Valid Accounts | Initial Access / Defense Evasion | HIGH |
 | Session Context Mutation | [T1550.004](https://attack.mitre.org/techniques/T1550/004/) Use Alternate Authentication Material: Web Session Cookie | Lateral Movement / Defense Evasion | HIGH–CRITICAL |
 | MFA Fatigue (Push Bombing) | [T1621](https://attack.mitre.org/techniques/T1621/) Multi-Factor Authentication Request Generation | Credential Access | HIGH |
+| Failed-Login Burst Preceding Success | [T1110](https://attack.mitre.org/techniques/T1110/) Brute Force | Credential Access | HIGH |
 | TOR Exit Access | [T1090.003](https://attack.mitre.org/techniques/T1090/003/) Proxy: Multi-hop Proxy | Command and Control / Defense Evasion | MEDIUM |
 | Refresh Token Replay | [T1550.004](https://attack.mitre.org/techniques/T1550/004/) Use Alternate Authentication Material: Web Session Cookie | Defense Evasion / Lateral Movement | HIGH |
 | Mass Session Creation | [T1136](https://attack.mitre.org/techniques/T1136/) Create Account (session flooding) | Persistence / Credential Access | HIGH |
@@ -97,6 +98,34 @@ An attacker with valid credentials spams MFA push notifications until the victim
 
 ### References
 - https://attack.mitre.org/techniques/T1621/
+
+## Failed-Login Burst Preceding Success
+
+**Technique:** T1110 — Brute Force  
+**Tactic:** Credential Access  
+**Severity:** HIGH  
+**Implementation:** `itdr.detections.AuthFailureBurstChecker`
+
+### Hypothesis
+A dense burst of failed authentications for one account followed promptly by a success means the guessing worked — the successful login is the attacker, not the user. This is the detection host telemetry (Wazuh sshd/PAM/Windows Security) can feed: those sources emit only login success/fail records, with no mid-session or MFA-challenge events for the other checkers to work with.
+
+### Required telemetry
+- Failed and successful login events with a user identifier (cross-session per user — a brute-force run may produce a fresh session key per attempt)
+
+### Detection logic
+`≥ 8 failed LOGINs within 300 s, then a SUCCESS within 120 s of the last failure. The burst is consumed on firing. Confidence grows +0.05 per failure beyond the threshold, +0.20 when the attempt rate exceeds 0.5/s (machine-speed guessing rather than human fumbling).`
+
+### Known false-positive modes
+- A user locked out by a stale cached credential — a mail client or mapped drive retrying an old password in the background — who then logs in correctly. Check whether the failures share the source IP of the success.
+- Automated service accounts with rotated secrets retrying against a stale value. Exclude service principals or give them a separate, higher threshold.
+- Shared-workstation kiosk accounts where several people mistype before one succeeds.
+
+### Tuning guidance
+- `fail_count` (default 8) / `fail_window` (default 300 s): lower to 5/120 for administrative accounts.
+- `success_grace` (default 120 s): the maximum gap between the last failure and the successful login that still counts as the same episode.
+
+### References
+- https://attack.mitre.org/techniques/T1110/
 
 ## TOR Exit Access
 

@@ -1,0 +1,71 @@
+#!/var/ossec/framework/python/bin/python3
+"""
+custom-itdr — Wazuh integration hook -> ITDR engine forwarder.
+
+Install on the Wazuh MANAGER (not the agents):
+
+    cp custom-itdr /var/ossec/integrations/custom-itdr
+    chmod 750 /var/ossec/integrations/custom-itdr
+    chown root:wazuh /var/ossec/integrations/custom-itdr
+
+then add the <integration> block from ../ossec-integration.xml to
+/var/ossec/etc/ossec.conf and `systemctl restart wazuh-manager`.
+
+Wazuh invokes this script once per matching alert as:
+
+    custom-itdr <alert_file> <api_key> <hook_url>
+
+It POSTs the raw alert JSON to <hook_url> (the engine's WazuhListener)
+with the shared token in X-ITDR-Token. stdlib only — it runs inside the
+manager's bundled Python with no third-party packages.
+"""
+
+import json
+import sys
+import urllib.request
+
+LOG = "/var/ossec/logs/integrations.log"
+TIMEOUT = 10
+
+
+def log(msg: str) -> None:
+    try:
+        with open(LOG, "a") as f:
+            f.write(f"custom-itdr: {msg}\n")
+    except OSError:
+        pass
+
+
+def main() -> int:
+    if len(sys.argv) < 4:
+        log(f"bad invocation argv={sys.argv[1:]}")
+        return 2
+    alert_file, api_key, hook_url = sys.argv[1], sys.argv[2], sys.argv[3]
+
+    try:
+        with open(alert_file) as f:
+            alert = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        log(f"cannot read alert file {alert_file}: {e}")
+        return 1
+
+    req = urllib.request.Request(
+        hook_url,
+        data=json.dumps(alert).encode(),
+        headers={"Content-Type": "application/json",
+                 "X-ITDR-Token": api_key},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            log(f"forwarded rule={alert.get('rule', {}).get('id')} "
+                f"-> {resp.status}")
+    except Exception as e:                              # noqa: BLE001
+        # Never crash the integratord loop; a dead engine endpoint must
+        # not degrade the manager.
+        log(f"forward failed: {e}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

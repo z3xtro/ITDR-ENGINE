@@ -120,6 +120,9 @@ class UserContext(Protocol):
     def record_mfa_fail(self, user: str, ts: float) -> None: ...
     def mfa_fails(self, user: str) -> list[float]: ...
     def clear_mfa_fails(self, user: str) -> None: ...
+    def record_auth_fail(self, user: str, ts: float) -> None: ...
+    def auth_fails(self, user: str) -> list[float]: ...
+    def clear_auth_fails(self, user: str) -> None: ...
     def last_success(self, user: str) -> Optional[tuple[GeoPoint, float]]: ...
     def set_last_success(self, user: str, geo: GeoPoint,
                          ts: float) -> None: ...
@@ -142,6 +145,7 @@ class SessionStore(Protocol):
 class _MemContext:
     def __init__(self):
         self._fails: dict[str, deque[float]] = {}
+        self._auth_fails: dict[str, deque[float]] = {}
         self._last: dict[str, tuple[GeoPoint, float]] = {}
         self._sessions_seen: dict[str, deque] = {}
 
@@ -153,6 +157,15 @@ class _MemContext:
 
     def clear_mfa_fails(self, user: str) -> None:
         self._fails.pop(user, None)
+
+    def record_auth_fail(self, user: str, ts: float) -> None:
+        self._auth_fails.setdefault(user, deque(maxlen=256)).append(ts)
+
+    def auth_fails(self, user: str) -> list[float]:
+        return list(self._auth_fails.get(user, ()))
+
+    def clear_auth_fails(self, user: str) -> None:
+        self._auth_fails.pop(user, None)
 
     def last_success(self, user: str):
         return self._last.get(user)
@@ -217,19 +230,35 @@ class _RedisContext:
     def _fk(self, user: str) -> str:
         return f"{self.prefix}:mfa:{user}"
 
-    def record_mfa_fail(self, user: str, ts: float) -> None:
-        k = self._fk(user)
+    def _afk(self, user: str) -> str:
+        return f"{self.prefix}:authfail:{user}"
+
+    def _push_capped(self, key: str, ts: float, cap: int) -> None:
         pipe = self.r.pipeline()
-        pipe.rpush(k, ts)
-        pipe.ltrim(k, -64, -1)
-        pipe.expire(k, self.ttl)
+        pipe.rpush(key, ts)
+        pipe.ltrim(key, -cap, -1)
+        pipe.expire(key, self.ttl)
         pipe.execute()
+
+    def record_mfa_fail(self, user: str, ts: float) -> None:
+        self._push_capped(self._fk(user), ts, 64)
 
     def mfa_fails(self, user: str) -> list[float]:
         return [float(x) for x in self.r.lrange(self._fk(user), 0, -1)]
 
     def clear_mfa_fails(self, user: str) -> None:
         self.r.delete(self._fk(user))
+
+    def record_auth_fail(self, user: str, ts: float) -> None:
+        # Brute-force bursts are far denser than MFA pushes, so this
+        # list gets a deeper cap.
+        self._push_capped(self._afk(user), ts, 256)
+
+    def auth_fails(self, user: str) -> list[float]:
+        return [float(x) for x in self.r.lrange(self._afk(user), 0, -1)]
+
+    def clear_auth_fails(self, user: str) -> None:
+        self.r.delete(self._afk(user))
 
     def last_success(self, user: str):
         raw = self.r.get(f"{self.prefix}:last:{user}")

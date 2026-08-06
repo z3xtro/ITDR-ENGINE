@@ -15,9 +15,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .detections import (ImpossibleTravelChecker, MFAFatigueChecker,
-                         MassSessionChecker, RefreshTokenReplayChecker,
-                         SessionMutationChecker, TorAccessChecker)
+from .detections import (AuthFailureBurstChecker, ImpossibleTravelChecker,
+                         MFAFatigueChecker, MassSessionChecker,
+                         RefreshTokenReplayChecker, SessionMutationChecker,
+                         TorAccessChecker)
 
 
 @dataclass(frozen=True)
@@ -149,6 +150,49 @@ CATALOG: list[DetectionDoc] = [
             "last rejection and the capitulation approval.",
         ],
         references=["https://attack.mitre.org/techniques/T1621/"],
+    ),
+    DetectionDoc(
+        checker_cls=AuthFailureBurstChecker,
+        name="Failed-Login Burst Preceding Success",
+        mitre_id="T1110",
+        mitre_name="Brute Force",
+        tactic="Credential Access",
+        severity="HIGH",
+        hypothesis=(
+            "A dense burst of failed authentications for one account "
+            "followed promptly by a success means the guessing worked — "
+            "the successful login is the attacker, not the user. This "
+            "is the detection host telemetry (Wazuh sshd/PAM/Windows "
+            "Security) can feed: those sources emit only login "
+            "success/fail records, with no mid-session or MFA-challenge "
+            "events for the other checkers to work with."),
+        telemetry=["Failed and successful login events with a user "
+                   "identifier (cross-session per user — a brute-force "
+                   "run may produce a fresh session key per attempt)"],
+        logic=("≥ 8 failed LOGINs within 300 s, then a SUCCESS within "
+               "120 s of the last failure. The burst is consumed on "
+               "firing. Confidence grows +0.05 per failure beyond the "
+               "threshold, +0.20 when the attempt rate exceeds 0.5/s "
+               "(machine-speed guessing rather than human fumbling)."),
+        false_positives=[
+            "A user locked out by a stale cached credential — a mail "
+            "client or mapped drive retrying an old password in the "
+            "background — who then logs in correctly. Check whether the "
+            "failures share the source IP of the success.",
+            "Automated service accounts with rotated secrets retrying "
+            "against a stale value. Exclude service principals or give "
+            "them a separate, higher threshold.",
+            "Shared-workstation kiosk accounts where several people "
+            "mistype before one succeeds.",
+        ],
+        tuning=[
+            "`fail_count` (default 8) / `fail_window` (default 300 s): "
+            "lower to 5/120 for administrative accounts.",
+            "`success_grace` (default 120 s): the maximum gap between "
+            "the last failure and the successful login that still "
+            "counts as the same episode.",
+        ],
+        references=["https://attack.mitre.org/techniques/T1110/"],
     ),
     DetectionDoc(
         checker_cls=TorAccessChecker,
