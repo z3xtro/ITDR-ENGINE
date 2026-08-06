@@ -1,0 +1,34 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install
+        run: pip install rich pytest pytest-asyncio requests redis fakeredis textual httpx
+      - name: Unit tests
+        run: python -m pytest tests/ -v
+      - name: Detection catalog drift check
+        run: |
+          python -m itdr.catalog
+          git diff --exit-code docs/DETECTIONS.md \
+            || (echo "::error::docs/DETECTIONS.md is stale — run python -m itdr.catalog" && exit 1)
+      - name: Purple-team validation (detection regression gate)
+        run: python validate.py
+      - name: Benchmark smoke run
+        run: python benchmark.py --events 20000 --users 100
+
+      - name: SOAR pipeline smoke run (Wazuh -> engine -> TheHive)
+        run: python soar_demo.py

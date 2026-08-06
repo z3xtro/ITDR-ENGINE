@@ -31,6 +31,14 @@ services:
       REDIS_URL: redis://redis:6379/0
       IDP: ${IDP:-sim}
       POLL_INTERVAL: ${POLL_INTERVAL:-60}
+      # Wazuh push ingestion (IDP=wazuh). The token must match the
+      # api_key in the manager's <integration> block.
+      WAZUH_SHARED_TOKEN: ${WAZUH_SHARED_TOKEN:-}
+      WAZUH_LISTEN_PORT: ${WAZUH_LISTEN_PORT:-8099}
+      # TheHive case management — opt-in; unset = engine unchanged.
+      THEHIVE_URL: ${THEHIVE_URL:-}
+      THEHIVE_API_KEY: ${THEHIVE_API_KEY:-}
+      THEHIVE_VERIFY_TLS: ${THEHIVE_VERIFY_TLS:-true}
       # Containment safety: DRY_RUN unless explicitly overridden.
       ENFORCEMENT_MODE: ${ENFORCEMENT_MODE:-DRY_RUN}
       ENFORCE_RISK_THRESHOLD: ${ENFORCE_RISK_THRESHOLD:-100}
@@ -39,4 +47,10 @@ services:
       ENTRA_TENANT_ID: ${ENTRA_TENANT_ID:-}
       ENTRA_CLIENT_ID: ${ENTRA_CLIENT_ID:-}
       ENTRA_CLIENT_SECRET: ${ENTRA_CLIENT_SECRET:-}
+    ports:
+      # Wazuh manager -> listener ingestion. Bind to the management
+      # network in anything real; an open ingestion port lets anyone
+      # forge authentication events.
+      - "${WAZUH_LISTEN_PORT:-8099}:${WAZUH_LISTEN_PORT:-8099}"
+      - "9108:9108"                     # prometheus metrics
     restart: unless-stopped

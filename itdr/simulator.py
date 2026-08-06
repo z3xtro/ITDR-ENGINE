@@ -2,11 +2,13 @@
 itdr.simulator
 ==============
 Deterministic telemetry generator for demos and tests. Produces benign
-baseline traffic plus three scripted attacks, one per checker:
+baseline traffic plus scripted attacks, one per checker:
 
   scenario_mfa_fatigue       -> push-bombing burst then capitulation
   scenario_token_theft       -> mid-session UA + subnet mutation
   scenario_impossible_travel -> Mumbai login, Sao Paulo 20 min later
+  scenario_brute_force       -> SSH password guessing that lands
+                                (the shape Wazuh host telemetry carries)
 
 Each scenario yields (delay_seconds, AuthEvent) tuples so the demo can
 replay them in accelerated wall-clock time while keeping the EVENT
@@ -119,9 +121,34 @@ def scenario_impossible_travel(user: str = "meera.iyer",
                    EventType.LOGIN, EventResult.SUCCESS)
 
 
+def scenario_brute_force(user: str = "deploy",
+                         start: datetime | None = None) -> Iterator[Step]:
+    """T1110: 12 failed SSH logins in ~48s from one host, then a success
+    from that same host — password guessing that landed.
+
+    This is deliberately shaped like Wazuh host telemetry rather than an
+    IdP feed: LOGIN success/fail only, one session key for the
+    user@endpoint pair, no MFA challenge or mid-session events.
+    """
+    t = start or datetime.now(timezone.utc)
+    sid = f"wazuh:{user}@bastion-01"
+    ip, city = "198.51.100.23", "Moscow"
+    for _ in range(12):
+        yield 0.1, _ev(t, user, sid, ip, "sshd", city,
+                       EventType.LOGIN, EventResult.FAIL)
+        t += timedelta(seconds=4)
+    t += timedelta(seconds=6)
+    yield 0.4, _ev(t, user, sid, ip, "sshd", city,
+                   EventType.LOGIN, EventResult.SUCCESS)
+
+
 def full_demo() -> Iterator[Step]:
     base = datetime.now(timezone.utc)
     yield from scenario_benign(start=base)
     yield from scenario_mfa_fatigue(start=base + timedelta(minutes=2))
     yield from scenario_token_theft(start=base + timedelta(minutes=6))
     yield from scenario_impossible_travel(start=base + timedelta(minutes=12))
+    # scenario_brute_force is deliberately NOT in the demo reel: the TUI
+    # canvas has fixed geometry for four detection nodes, so a fifth
+    # would bump the alert counters without lighting anything up. It's
+    # exercised by validate.py and the Wazuh ingestion tests instead.

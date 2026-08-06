@@ -1,0 +1,106 @@
+# TheHive 5 + Cortex SOAR stack (Stage 2 — bring up AFTER Wazuh works).
+#
+#   docker compose up -d
+#   TheHive: http://localhost:9000   (admin@thehive.local / secret)
+#   Cortex:  http://localhost:9001   (create admin on first visit)
+#
+# First-run wiring for the ITDR engine:
+#   1. Log in to TheHive -> Organizations -> create org (e.g. "soc")
+#      + a service account user with an API key.
+#   2. Export for the engine:
+#        THEHIVE_URL=http://localhost:9000
+#        THEHIVE_API_KEY=<that key>
+#
+# RAM budget (lab-tuned heaps, ~5-6 GB total for this stack):
+#   cassandra ~1.5G · elasticsearch ~1.5G · thehive ~1.5G · cortex ~1G
+# If you only have 8 GB total, run this stack WITHOUT cortex first
+# (docker compose up -d cassandra elasticsearch thehive).
+
+services:
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      MAX_HEAP_SIZE: 1024M
+      HEAP_NEWSIZE: 256M
+      CASSANDRA_CLUSTER_NAME: thehive
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe cluster' || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.17.24
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "false"
+      ES_JAVA_OPTS: -Xms1g -Xmx1g
+      cluster.name: thehive
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: ["CMD-SHELL",
+             "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 10
+    restart: unless-stopped
+
+  thehive:
+    image: strangebee/thehive:5.2
+    depends_on:
+      cassandra:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "9000:9000"
+    environment:
+      JVM_OPTS: "-Xms1024M -Xmx1024M"
+    command:
+      - --secret
+      - "lab-only-change-me-in-anything-real"
+      - --cql-hostnames
+      - cassandra
+      - --index-backend
+      - elasticsearch
+      - --es-hostnames
+      - elasticsearch
+      - --cortex-hostnames
+      - cortex
+      - --cortex-port
+      - "9001"
+    volumes:
+      - thehive-data:/opt/thp/thehive/files
+    restart: unless-stopped
+
+  # Analyzer/responder engine. Optional on first bring-up — comment out
+  # (or don't start it) if RAM is tight; TheHive runs fine without it.
+  cortex:
+    image: thehiveproject/cortex:3.1.8
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    ports:
+      - "9001:9001"
+    environment:
+      es_uri: http://elasticsearch:9200
+      job_directory: /tmp/cortex-jobs
+    volumes:
+      - cortex-jobs:/tmp/cortex-jobs
+      # Cortex launches analyzers as sibling containers.
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+volumes:
+  cassandra-data:
+  es-data:
+  thehive-data:
+  cortex-jobs:

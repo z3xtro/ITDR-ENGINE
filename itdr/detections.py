@@ -317,8 +317,78 @@ class MassSessionChecker:
         )
 
 
+# ------------------------------------------------------------------------
+class AuthFailureBurstChecker:
+    """Failed-login burst followed by a success — credential stuffing or
+    password guessing that finally landed (T1110).
+
+    This is the detection host telemetry can actually feed. Wazuh ships
+    sshd/PAM/Windows Security records, which are LOGIN success/fail and
+    nothing else: there are no token-refresh or API-access events for
+    SessionMutation to compare, and no MFA challenge records for
+    MFAFatigue. Without this checker, a Wazuh-sourced session tops out
+    at impossible-travel's 70 points and can never reach the CRITICAL
+    containment tier.
+
+    Failures are tracked per user across sessions, because a brute-force
+    run against one account produces a new session key per attempt on
+    some sources.
+    """
+    name = "auth_failure_burst"
+
+    def __init__(self, fail_count: int = 8, fail_window: float = 300.0,
+                 success_grace: float = 120.0):
+        self.fail_count = fail_count
+        self.fail_window = fail_window
+        self.success_grace = success_grace
+
+    def check(self, ev: AuthEvent, session: SessionState,
+              ctx: UserContext) -> Optional[Detection]:
+        if ev.event_type is not EventType.LOGIN:
+            return None
+
+        if ev.event_result is EventResult.FAIL:
+            ctx.record_auth_fail(ev.user_id, ev.ts)
+            return None
+
+        fails = ctx.auth_fails(ev.user_id)
+        if not fails:
+            return None
+        # The burst must be recent AND dense: a slow trickle of typos
+        # across a workday is not an attack.
+        burst = [t for t in fails if fails[-1] - t <= self.fail_window]
+        if len(burst) < self.fail_count:
+            return None
+        if ev.ts - fails[-1] > self.success_grace:
+            return None
+
+        ctx.clear_auth_fails(ev.user_id)   # consume; one alert per burst
+        span = burst[-1] - burst[0]
+        # Machine-speed guessing (many attempts, tiny span) is a stronger
+        # signal than a user fumbling a password eight times.
+        rate = len(burst) / max(span, 1.0)
+        confidence = min(0.55 + 0.05 * (len(burst) - self.fail_count)
+                         + (0.2 if rate > 0.5 else 0.0), 1.0)
+        return Detection(
+            checker=self.name,
+            title="Failed-login burst followed by successful authentication",
+            severity=Severity.HIGH,
+            confidence=round(confidence, 2),
+            mitre="T1110",
+            evidence={
+                "fail_count": len(burst),
+                "window_s": self.fail_window,
+                "burst_span_s": round(span, 1),
+                "attempts_per_s": round(rate, 2),
+                "success_delay_s": round(ev.ts - fails[-1], 1),
+                "source_ip": ev.client_ip,
+            },
+        )
+
+
 DEFAULT_CHECKERS: list = [
     ImpossibleTravelChecker(),
+    AuthFailureBurstChecker(),
     SessionMutationChecker(),
     MFAFatigueChecker(),
     TorAccessChecker(),

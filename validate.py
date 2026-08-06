@@ -20,7 +20,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from itdr.engine import ITDREngine
-from itdr.simulator import (scenario_benign, scenario_impossible_travel,
+from itdr.simulator import (scenario_benign, scenario_brute_force,
+                            scenario_impossible_travel,
                             scenario_mfa_fatigue, scenario_token_theft)
 from itdr.detections import DEFAULT_ENRICHER
 
@@ -54,6 +55,13 @@ CASES = [
         "scenario": scenario_impossible_travel,
         "expect_alert": True,
         "expect_checkers": {"impossible_travel"},
+    },
+    {
+        "technique": "T1110",
+        "name": "SSH brute force that lands (host telemetry)",
+        "scenario": scenario_brute_force,
+        "expect_alert": True,
+        "expect_checkers": {"auth_failure_burst"},
     },
 ]
 
