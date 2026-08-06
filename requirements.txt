@@ -1,0 +1,12 @@
+# Runtime dependencies.
+#   pip install -r requirements.txt
+#
+# Nothing here is needed for the detection math itself — the engine core
+# is pure stdlib. These cover the dashboards, the state backend, and the
+# HTTP clients for live telemetry and containment.
+
+rich>=13.0            # CLI dashboards, demo output
+textual>=0.60         # live TUI canvas (python -m itdr.tui)
+requests>=2.31        # Okta/Entra pollers, TheHive client
+httpx>=0.27           # async containment adapters (itdr/adapters.py)
+redis>=5.0            # RedisStore shared-state backend (STATE_BACKEND=redis)

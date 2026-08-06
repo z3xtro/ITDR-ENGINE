@@ -1,0 +1,16 @@
+2026-08-06 15:40:33,682 itdr.engine INFO detection mfa_fatigue user=ravi.kumar conf=0.68 (+47.6 risk)
+2026-08-06 15:40:33,685 itdr.respond INFO [DRY-RUN] POST https://idp.example.com/api/v1/hooks/soc-channel payload={"text": "[NOTABLE] #1 user=ravi.kumar session=sess-b8dd2f7 risk=47.6 (mfa_fatigue)"} req=e5e68e00
+2026-08-06 15:40:33,686 itdr.respond INFO alert#1 SOC notified (notable, no containment)
+2026-08-06 15:40:33,712 itdr.engine INFO detection session_mutation user=asha.nair conf=0.95 (+85.5 risk)
+2026-08-06 15:40:33,712 itdr.engine INFO detection tor_access user=asha.nair conf=0.70 (+31.5 risk)
+2026-08-06 15:40:33,712 itdr.engine INFO detection refresh_replay user=asha.nair conf=0.90 (+63.0 risk)
+2026-08-06 15:40:33,715 itdr.respond INFO [DRY-RUN] DELETE https://idp.example.com/api/v1/users/asha.nair/sessions payload={"session_id": "sess-9416db7be3c3", "reason": "itdr_auto_containment"} req=5278bad6
+2026-08-06 15:40:33,716 itdr.respond INFO alert#2 [DRY-RUN] would revoke all sessions for asha.nair (trigger session sess-9416db7, req=5278bad6)
+2026-08-06 15:40:33,716 itdr.respond INFO [DRY-RUN] POST https://idp.example.com/api/v1/users/asha.nair/lifecycle/reset_factors payload={"reason": "itdr_auto_containment"} req=a843fa8a
+2026-08-06 15:40:33,716 itdr.respond INFO alert#2 [DRY-RUN] would force MFA re-enrollment for asha.nair
+2026-08-06 15:40:33,716 itdr.respond INFO [DRY-RUN] POST https://idp.example.com/api/v1/hooks/soc-channel payload={"text": "[CRITICAL] #2 user=asha.nair session=sess-9416db7 risk=180.0 (session_mutation + tor_access + refresh_replay)"} req=36f5b14f
+2026-08-06 15:40:33,716 itdr.respond INFO alert#2 SOC notified with containment report
+2026-08-06 15:40:33,721 itdr.engine INFO detection tor_access user=asha.nair conf=0.70 (+31.5 risk)
+2026-08-06 15:40:33,737 itdr.engine INFO detection impossible_travel user=meera.iyer conf=1.00 (+70.0 risk)
+2026-08-06 15:40:33,739 itdr.respond INFO [DRY-RUN] POST https://idp.example.com/api/v1/hooks/soc-channel payload={"text": "[NOTABLE] #3 user=meera.iyer session=sess-eb68e30 risk=70.0 (impossible_travel)"} req=49322453
+2026-08-06 15:40:33,739 itdr.respond INFO alert#3 SOC notified (notable, no containment)
