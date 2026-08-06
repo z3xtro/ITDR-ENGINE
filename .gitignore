@@ -4,3 +4,5 @@ __pycache__/
 itdr_audit.jsonl
 .okta_cursor.json
 .entra_cursor.json
+itdr.log
+*.log
