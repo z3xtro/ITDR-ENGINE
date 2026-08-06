@@ -1,0 +1,8 @@
+# Development / CI dependencies (includes everything in requirements.txt).
+#   pip install -r requirements-dev.txt
+
+-r requirements.txt
+
+pytest>=8.0
+pytest-asyncio>=0.23   # async enforcement + TUI tests (asyncio_mode=auto)
+fakeredis>=2.21        # Redis parity tests without a Redis server

@@ -157,7 +157,7 @@ breaks a detection fails the build.
 
 **Local:**
 ```bash
-pip install rich pytest requests redis fakeredis
+pip install -r requirements.txt       # or requirements-dev.txt to run the tests
 python -m itdr --speed 5              # replay attack scenarios, dry-run
 python -m itdr --live                 # same, mock IdP calls marked LIVE
 python soar_demo.py                   # Wazuh → engine → TheHive, offline
