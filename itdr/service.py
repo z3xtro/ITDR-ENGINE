@@ -69,7 +69,18 @@ def build_engine() -> tuple[ITDREngine, SOARResponder]:
             bridge.record(alert,
                           containment_actions=responder.actions[before:])
 
-    engine = ITDREngine(on_alert=on_alert, store=build_store())
+    # Host telemetry needs the host-native checkers: two of the three
+    # headline IdP detections (MFA fatigue, impossible travel) cannot
+    # fire on sshd/PAM logs at all. See itdr.wazuh_detections.
+    checkers = None
+    if os.environ.get("IDP", "sim").lower().startswith("wazuh"):
+        from .wazuh_detections import combined_checkers
+        checkers = combined_checkers()
+        log.info("detection set: host-native + IdP (%d checkers)",
+                 len(checkers))
+
+    engine = ITDREngine(on_alert=on_alert, store=build_store(),
+                        checkers=checkers)
     if os.environ.get("METRICS", "true").lower() != "false":
         from .metrics import start_metrics_server
         port = int(os.environ.get("METRICS_PORT", "9108"))
@@ -103,6 +114,14 @@ def main() -> None:
         poller = EntraPoller(os.environ["ENTRA_TENANT_ID"],
                              os.environ["ENTRA_CLIENT_ID"],
                              os.environ["ENTRA_CLIENT_SECRET"])
+    elif idp == "wazuh-indexer":
+        from .wazuh import WazuhIndexerPoller
+        verify = os.environ.get("WAZUH_VERIFY_TLS", "false").lower() == "true"
+        poller = WazuhIndexerPoller(
+            os.environ.get("WAZUH_INDEXER_URL", "https://localhost:9200"),
+            os.environ.get("WAZUH_INDEXER_USER", "admin"),
+            os.environ["WAZUH_INDEXER_PASSWORD"],
+            verify=verify)
     elif idp == "wazuh":
         from .wazuh import WazuhListener
         poller = None

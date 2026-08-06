@@ -170,5 +170,19 @@ class ITDRAlert:
     def summary(self) -> str:
         checks = " + ".join(d.checker for d in self.detections)
         return (f"[{self.tier}] #{self.id} user={self.user_id} "
-                f"session={self.session_id[:12]} risk={self.risk_score} "
+                f"session={self._short_session} risk={self.risk_score} "
                 f"({checks})")
+
+    @property
+    def _short_session(self) -> str:
+        """Abbreviate the session id without destroying it.
+
+        IdP session ids are long opaque strings where a 12-char prefix
+        is plenty to correlate against. Wazuh ids are `user@endpoint`,
+        and truncating those to 12 chars cuts at the '@' — hiding the
+        endpoint, which is the single most useful field on a host alert.
+        """
+        sid = self.session_id
+        if len(sid) <= 28:
+            return sid
+        return sid[:28] + "…"
