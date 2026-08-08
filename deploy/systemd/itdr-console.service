@@ -33,6 +33,16 @@ After=network-online.target
 Type=simple
 User=wazuh-user
 WorkingDirectory=/home/wazuh-user/ITDR-ENGINE
+
+# Dependencies were installed with `pip install --user`, which puts them
+# in ~/.local/lib/python3.11/site-packages. Python only adds that path
+# when it can resolve the user's home, and a systemd service does not
+# reliably inherit HOME — so an interactive run works and the service
+# dies with ModuleNotFoundError. Set both: HOME for site.USER_SITE, and
+# PYTHONPATH so it works even if HOME is overridden.
+Environment=HOME=/home/wazuh-user
+Environment=PYTHONPATH=/home/wazuh-user/.local/lib/python3.11/site-packages
+Environment=PYTHONUNBUFFERED=1
 # The leading '-' makes a missing file non-fatal. Without it, systemd
 # refuses to start the unit and logs NOTHING to the unit journal — you
 # get "Result: resources" and `journalctl -u` shows "No entries", which
