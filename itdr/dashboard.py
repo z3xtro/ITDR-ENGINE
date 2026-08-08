@@ -546,8 +546,10 @@ def build_live_source(interval: float = 60.0, lookback_minutes: int = 240):
     """
     import os
     from .engine import ITDREngine
-    from .wazuh import WazuhIndexerPoller
+    from .wazuh import WazuhIndexerPoller, silence_tls_warnings
     from .wazuh_detections import combined_checkers
+
+    silence_tls_warnings()
 
     pw = os.environ.get("WAZUH_INDEXER_PASSWORD", "").strip()
     if not pw:

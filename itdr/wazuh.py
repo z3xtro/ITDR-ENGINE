@@ -113,6 +113,23 @@ _MACHINE_ACCOUNTS = {
 }
 
 
+def silence_tls_warnings() -> None:
+    """Quiet urllib3's per-request InsecureRequestWarning.
+
+    Stock Wazuh ships a self-signed certificate, so verify=False is the
+    normal lab configuration and urllib3 warns on EVERY request — nine
+    lines apiece, which buries real output. Called only from CLI entry
+    points, never on import: silencing a security warning on behalf of
+    a library's importer would be presumptuous. The downgrade itself is
+    surfaced in the console header and the README.
+    """
+    try:
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+    except Exception:                                   # noqa: BLE001
+        pass
+
+
 def _classify(rec: dict) -> Optional[tuple[EventType, EventResult]]:
     """Rule ID first (exact), rule groups second (best-effort)."""
     rule = rec.get("rule") or {}
