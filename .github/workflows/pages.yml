@@ -1,0 +1,69 @@
+# Publish the console to GitHub Pages on every push to the branch.
+#
+# Gives the project a permanent public URL that needs no server running:
+#   https://<user>.github.io/ITDR-ENGINE/
+#
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
+#
+# The published page renders DEMO data and is labelled as such in its
+# header — it runs in CI, which has no Wazuh to read from. Live data
+# stays on your own network via the systemd unit in deploy/systemd/.
+
+name: pages
+
+on:
+  push:
+    branches: [main, claude/wazuh-thehive-soar-setup-f8abur]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Let a running deploy finish rather than cancelling it midway; a
+# half-deployed Pages site is worse than a slightly stale one.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Build site
+        run: |
+          mkdir -p _site
+          # The console itself, from a real engine run over a scripted
+          # intrusion — the numbers are computed, not written by hand.
+          python -m itdr.dashboard --snapshot _site/index.html
+
+          # Detection artifacts alongside it.
+          python -m itdr.catalog
+          python -m itdr.export
+          python -m itdr.quality
+          cp -r exports _site/exports
+          cp docs/DETECTIONS.md docs/DETECTION_QUALITY.md _site/ 2>/dev/null || true
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
