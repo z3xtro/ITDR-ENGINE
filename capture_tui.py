@@ -1,5 +1,7 @@
 """Capture the actual ITDR demo TUI as an image via Rich's SVG export."""
 
+from pathlib import Path
+
 import itdr.__main__ as demo
 from rich.console import Console
 from rich.panel import Panel
@@ -41,6 +43,9 @@ for a in responder.actions:
     style = "yellow" if "DRY-RUN" in a else "white"
     console.print(f"  [{style}]{a}")
 
-console.save_svg("/home/claude/itdr/docs/tui-demo.svg",
-                 title="python -m itdr  ·  ITDR Engine")
-print("SVG saved")
+# Relative to this file, so the capture works from any checkout rather
+# than only the machine it was first written on.
+_out = Path(__file__).resolve().parent / "docs" / "tui-demo.svg"
+_out.parent.mkdir(parents=True, exist_ok=True)
+console.save_svg(str(_out), title="python -m itdr  ·  ITDR Engine")
+print(f"SVG saved -> {_out}")

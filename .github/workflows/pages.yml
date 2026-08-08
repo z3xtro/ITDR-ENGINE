@@ -13,7 +13,7 @@ name: pages
 
 on:
   push:
-    branches: [main, claude/wazuh-thehive-soar-setup-f8abur]
+    branches: [main, wazuh-soar-integration]
   workflow_dispatch:
 
 permissions:
