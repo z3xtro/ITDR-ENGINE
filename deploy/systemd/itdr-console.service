@@ -43,12 +43,16 @@ WorkingDirectory=/home/wazuh-user/ITDR-ENGINE
 Environment=HOME=/home/wazuh-user
 Environment=PYTHONPATH=/home/wazuh-user/.local/lib/python3.11/site-packages
 Environment=PYTHONUNBUFFERED=1
-# The leading '-' makes a missing file non-fatal. Without it, systemd
-# refuses to start the unit and logs NOTHING to the unit journal — you
-# get "Result: resources" and `journalctl -u` shows "No entries", which
-# is close to undiagnosable. With it, the service starts and Python
-# exits with a readable message naming the variable it needs.
--EnvironmentFile=/etc/itdr-console.env
+# The '-' goes AFTER the '=' — it marks the FILE as optional, so a
+# missing file is non-fatal. Written as "-EnvironmentFile=" it is not a
+# valid directive name at all, and the file is silently never read:
+# the service starts and reports the credentials missing even though
+# they are sitting right there on disk.
+#
+# Without the '-' anywhere, a missing file makes systemd refuse the unit
+# before executing anything — "Result: resources", with `journalctl -u`
+# showing "No entries" and nothing naming the cause.
+EnvironmentFile=-/etc/itdr-console.env
 ExecStart=/usr/bin/env python3.11 -m itdr.dashboard --live --hours 24 --interval 60 --port 8080
 
 Restart=always
