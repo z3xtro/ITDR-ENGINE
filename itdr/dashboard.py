@@ -462,13 +462,120 @@ def render_page(st: dict, title="ITDR Console") -> str:
 </div>"""
 
 
-def render_document(st: dict, title="ITDR Console") -> str:
+def render_document(st: dict, title="ITDR Console",
+                    refresh: int = 0) -> str:
+    # Meta-refresh rather than JS polling: the page is a server-rendered
+    # snapshot with no client state to preserve, so a reload is the
+    # whole update mechanism and it keeps the document dependency-free.
+    meta = (f'<meta http-equiv="refresh" content="{refresh}">'
+            if refresh else "")
     return (f"<!doctype html><html lang=\"en\"><head>"
             f"<meta charset=\"utf-8\">"
             f"<meta name=\"viewport\" content=\"width=device-width,"
-            f"initial-scale=1\">"
+            f"initial-scale=1\">{meta}"
             f"<title>{_esc(title)}</title><style>{_CSS}</style></head>"
             f"<body>{render_page(st, title)}</body></html>")
+
+
+# --------------------------------------------------------- live source --
+
+class LiveWazuhSource:
+    """Polls the Wazuh Indexer, feeds the engine, retains recent alerts.
+
+    The engine instance is long-lived on purpose: the host-native
+    detectors correlate across events, so rebuilding it each poll would
+    reset every sliding window and the correlations would never fire.
+    Alerts accumulate in a bounded ring.
+    """
+
+    def __init__(self, poller, engine, interval: float = 60.0,
+                 maxlen: int = 500):
+        from collections import deque
+        self.poller = poller
+        self.engine = engine
+        self.interval = interval
+        self.alerts: "deque" = deque(maxlen=maxlen)
+        self.last_poll: Optional[str] = None
+        self.last_error: Optional[str] = None
+        self.polled_events = 0
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def poll_once(self) -> int:
+        n = 0
+        try:
+            for ev in self.poller.fetch():
+                self.engine.process_event(ev)
+                n += 1
+            self.last_error = None
+        except Exception as e:                          # noqa: BLE001
+            # A dead indexer must leave the console serving the last
+            # good state rather than 500-ing.
+            self.last_error = str(e)[:200]
+        self.polled_events += n
+        self.last_poll = datetime.now(timezone.utc).strftime("%H:%M:%S")
+        return n
+
+    def start(self) -> None:
+        def loop():
+            while not self._stop.is_set():
+                self.poll_once()
+                self._stop.wait(self.interval)
+        self.poll_once()                    # populate before first render
+        self._thread = threading.Thread(target=loop, daemon=True,
+                                        name="itdr-live-poll")
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def state(self) -> dict:
+        st = collect_state(self.engine, None, list(self.alerts))
+        st["source"] = "wazuh-indexer"
+        if self.last_error:
+            st["containment"] = [f"indexer error: {self.last_error}"]
+        return st
+
+
+def build_live_source(interval: float = 60.0, lookback_minutes: int = 240):
+    """Wire an Indexer poller to a fresh engine from the environment.
+
+    Raises with an actionable message rather than a stack trace when the
+    connection variables are absent — a missing export is the single
+    most common way this fails.
+    """
+    import os
+    from .engine import ITDREngine
+    from .wazuh import WazuhIndexerPoller
+    from .wazuh_detections import combined_checkers
+
+    pw = os.environ.get("WAZUH_INDEXER_PASSWORD", "").strip()
+    if not pw:
+        raise SystemExit(
+            "WAZUH_INDEXER_PASSWORD is not set.\n\n"
+            "  export WAZUH_INDEXER_URL=https://localhost:9200\n"
+            "  export WAZUH_INDEXER_USER=admin\n"
+            "  export WAZUH_INDEXER_PASSWORD=...\n")
+
+    poller = WazuhIndexerPoller(
+        os.environ.get("WAZUH_INDEXER_URL", "https://localhost:9200"),
+        os.environ.get("WAZUH_INDEXER_USER", "admin"), pw,
+        verify=os.environ.get("WAZUH_VERIFY_TLS", "false").lower() == "true",
+        lookback_minutes=lookback_minutes,
+        cursor_file=os.environ.get("WAZUH_CURSOR_FILE",
+                                   ".wazuh_console_cursor.json"))
+
+    src_holder: dict = {}
+
+    def on_alert(a):
+        src = src_holder.get("src")
+        if src is not None:
+            src.alerts.append(a)
+
+    engine = ITDREngine(checkers=combined_checkers(), on_alert=on_alert)
+    src = LiveWazuhSource(poller, engine, interval=interval)
+    src_holder["src"] = src
+    return src
 
 
 # ------------------------------------------------------------ server --
@@ -478,15 +585,19 @@ class DashboardServer:
     running engine. Read-only: it never mutates engine state."""
 
     def __init__(self, engine=None, responder=None, alerts=None,
-                 host="0.0.0.0", port=8080):
+                 host="0.0.0.0", port=8080, source=None, refresh=0):
         self.engine = engine
         self.responder = responder
         self.alerts = alerts if alerts is not None else []
         self.host, self.port = host, port
+        self.source = source          # LiveWazuhSource, or None
+        self.refresh = refresh
         self._httpd: Optional[ThreadingHTTPServer] = None
         self._thread: Optional[threading.Thread] = None
 
     def state(self) -> dict:
+        if self.source is not None:
+            return self.source.state()
         return collect_state(self.engine, self.responder, self.alerts)
 
     def start(self) -> None:
@@ -499,9 +610,10 @@ class DashboardServer:
                     return self._send(200, json.dumps(srv.state()),
                                       "application/json")
                 if path in ("/", "/index.html"):
-                    return self._send(200,
-                                      render_document(srv.state()),
-                                      "text/html; charset=utf-8")
+                    return self._send(
+                        200,
+                        render_document(srv.state(), refresh=srv.refresh),
+                        "text/html; charset=utf-8")
                 self._send(404, "not found", "text/plain")
 
             def _send(self, code, body, ctype):
@@ -605,26 +717,57 @@ def demo_state() -> dict:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="itdr.dashboard")
+    p.add_argument("--live", action="store_true",
+                   help="render real alerts polled from the Wazuh Indexer")
     p.add_argument("--snapshot", metavar="PATH",
                    help="write a static HTML snapshot and exit")
     p.add_argument("--port", type=int, default=8080)
+    p.add_argument("--interval", type=float, default=60.0,
+                   help="seconds between Indexer polls (live only)")
+    p.add_argument("--hours", type=float, default=4.0,
+                   help="how far back to load on start (live only)")
+    p.add_argument("--refresh", type=int, default=30,
+                   help="browser auto-refresh seconds; 0 disables")
     args = p.parse_args()
 
-    st = demo_state()
+    source = None
+    if args.live:
+        source = build_live_source(interval=args.interval,
+                                   lookback_minutes=int(args.hours * 60))
+        if args.snapshot:
+            source.poll_once()
+        else:
+            source.start()
+        st = source.state()
+        print(f"polled {source.polled_events} event(s) from the indexer; "
+              f"{len(source.alerts)} alert(s)")
+        if source.last_error:
+            print(f"  indexer error: {source.last_error}")
+        elif not source.polled_events:
+            print("  no new authentication events in the lookback window "
+                  "— log in and out of an enrolled endpoint, then retry")
+    else:
+        st = demo_state()
+
     if args.snapshot:
-        Path(args.snapshot).write_text(render_document(st))
+        Path(args.snapshot).write_text(
+            render_document(st, refresh=0))
         print(f"wrote {args.snapshot}")
         return
 
-    srv = DashboardServer(port=args.port)
-    srv.alerts = []
-    srv._demo = st                                      # noqa: SLF001
-    srv.state = lambda: st                              # type: ignore
+    srv = DashboardServer(port=args.port, source=source,
+                          refresh=args.refresh)
+    if source is None:
+        srv.state = lambda: st                          # type: ignore
     srv.start()
-    print(f"ITDR console: http://localhost:{srv.port}  (ctrl-c to stop)")
+    label = "live (Wazuh Indexer)" if args.live else "demo data"
+    print(f"ITDR console [{label}]: http://localhost:{srv.port}"
+          f"   (ctrl-c to stop)")
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
+        if source:
+            source.stop()
         srv.stop()
 
 
