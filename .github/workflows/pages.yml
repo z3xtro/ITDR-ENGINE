@@ -43,6 +43,12 @@ jobs:
       - name: Build site
         run: |
           mkdir -p _site
+          # Belt and braces: stop Jekyll touching the output. Source is
+          # set to GitHub Actions so Jekyll should not run at all, but a
+          # repo that was ever set to "deploy from a branch" can leave a
+          # Jekyll build serving the README instead of this site.
+          touch _site/.nojekyll
+
           # The console itself, from a real engine run over a scripted
           # intrusion — the numbers are computed, not written by hand.
           python -m itdr.dashboard --snapshot _site/index.html
