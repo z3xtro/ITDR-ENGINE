@@ -9,52 +9,39 @@
 #   systemctl status itdr-console
 #   journalctl -u itdr-console -f
 #
-# Survives logout and reboot, so the console is up whenever the machine
-# is. Adjust User/WorkingDirectory/ExecStart if your checkout differs.
+# Deliberately minimal. An earlier version carried ProtectSystem=strict,
+# PrivateTmp and friends; on this OVA that produced
+# "Result: resources" — systemd failing to build the namespace before it
+# ever ran the command, with no useful error. A dashboard that refuses
+# to start is worth less than one running without sandboxing, so the
+# hardening is gone. Add it back a directive at a time if you want it,
+# checking `systemctl start` after each.
+#
+# ExecStart uses /usr/bin/env so it finds python3.11 wherever the distro
+# put it, rather than hardcoding a path that varies.
 
 [Unit]
 Description=ITDR Console — identity threat detection dashboard
 Documentation=https://github.com/z3xtro/ITDR-ENGINE
 # Wants= rather than Requires=: the console must still come up and show
-# its last state if the indexer is down, otherwise the one moment you
-# need the dashboard is the moment it refuses to start.
-Wants=network-online.target wazuh-indexer.service
-After=network-online.target wazuh-indexer.service
+# its last state if the indexer is down, since that is precisely when
+# someone wants to look at it.
+Wants=network-online.target
+After=network-online.target
 
 [Service]
 Type=simple
 User=wazuh-user
-Group=wazuh-user
 WorkingDirectory=/home/wazuh-user/ITDR-ENGINE
 EnvironmentFile=/etc/itdr-console.env
-ExecStart=/usr/bin/python3.11 -m itdr.dashboard --live --hours 24 \
-          --interval 60 --port 8080
+ExecStart=/usr/bin/env python3.11 -m itdr.dashboard --live --hours 24 --interval 60 --port 8080
 
 Restart=always
 RestartSec=10
-# The indexer can take a while to answer after a cold boot; don't give
-# up and mark the unit failed while it is still coming up.
-StartLimitIntervalSec=300
-StartLimitBurst=10
 
 StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=itdr-console
-
-# Hardening: the console only reads from the network and writes one
-# cursor file. Nothing here needs privilege.
-NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-# ProtectHome is deliberately off: the service reads its dependencies
-# from ~/.local (pip install --user) and writes its polling cursor into
-# the checkout. Combining ProtectHome with ReadWritePaths here is a
-# common way to get an opaque permission failure at startup.
-ProtectHome=false
-ReadWritePaths=/home/wazuh-user/ITDR-ENGINE
-ProtectKernelTunables=true
-ProtectControlGroups=true
-RestrictSUIDSGID=true
 
 [Install]
 WantedBy=multi-user.target
