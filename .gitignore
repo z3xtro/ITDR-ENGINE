@@ -6,3 +6,6 @@ itdr_audit.jsonl
 .entra_cursor.json
 itdr.log
 *.log
+
+# Generated exports — regenerate with `python -m itdr.export`
+exports/

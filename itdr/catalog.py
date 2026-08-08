@@ -12,29 +12,13 @@ without documented FP modes and tuning guidance is not production-ready.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from .catalog_types import DetectionDoc  # re-exported for callers
 from pathlib import Path
 
 from .detections import (AuthFailureBurstChecker, ImpossibleTravelChecker,
                          MFAFatigueChecker, MassSessionChecker,
                          RefreshTokenReplayChecker, SessionMutationChecker,
                          TorAccessChecker)
-
-
-@dataclass(frozen=True)
-class DetectionDoc:
-    checker_cls: type
-    name: str
-    mitre_id: str
-    mitre_name: str
-    tactic: str
-    severity: str
-    hypothesis: str
-    telemetry: list[str]
-    logic: str
-    false_positives: list[str]
-    tuning: list[str]
-    references: list[str] = field(default_factory=list)
 
 
 CATALOG: list[DetectionDoc] = [
@@ -260,6 +244,13 @@ CATALOG: list[DetectionDoc] = [
                 "accounts; separate baseline for service principals."],
         references=["https://attack.mitre.org/techniques/T1136/"]),
 ]
+
+
+# Host-native (Wazuh) detections are catalogued separately but belong to
+# the same registry: DETECTIONS.md, the Sigma export and the ATT&CK
+# coverage layer must all describe the whole engine, not just the IdP half.
+from .catalog_wazuh import WAZUH_CATALOG  # noqa: E402
+CATALOG.extend(WAZUH_CATALOG)
 
 
 def coverage_table() -> str:

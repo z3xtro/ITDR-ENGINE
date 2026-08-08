@@ -115,8 +115,17 @@ class SSHBruteForceSuccessChecker:
             return None
 
         self._fails.pop(key, None)      # consumed; don't re-alert
-        # 5 fails -> 0.75, 20+ -> 1.0
-        confidence = min(0.75 + (fails - self.fail_count) * 0.017, 1.0)
+        # Confidence ramp: 0.75 at the threshold, 1.0 by 15 failures.
+        #
+        # Calibrated against the risk model rather than picked by feel.
+        # At CRITICAL severity (90) a detection needs confidence > 0.834
+        # to reach the CRITICAL alert tier (75) on its own. The previous
+        # ramp (+0.017/failure) topped out at 0.82 for a 9-failure burst
+        # — so the least ambiguous signal host telemetry produces could
+        # not raise a CRITICAL alert by itself, which the quality
+        # harness caught. A handful of failures may be a forgotten
+        # password; ten rapid ones followed by a success is not.
+        confidence = min(0.75 + (fails - self.fail_count) * 0.025, 1.0)
         return Detection(
             checker=self.name,
             title="Successful login after failed-password burst",
