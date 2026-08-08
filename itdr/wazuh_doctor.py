@@ -40,6 +40,16 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
+# Stock Wazuh ships a self-signed certificate, so verify_tls=False is the
+# normal lab configuration and urllib3 warns on every single request —
+# five copies of a nine-line warning drown the report. The downgrade is
+# already stated in the config line and the README; silence the repeats.
+try:
+    import urllib3
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+except Exception:                                       # noqa: BLE001
+    pass
+
 from .wazuh import (WazuhAPIClient, WazuhAPIError, WazuhIndexerPoller,
                     _classify, _wazuh_user, alert_agent, map_wazuh_alert)
 
@@ -175,7 +185,7 @@ class Doctor:
         try:
             poller = WazuhIndexerPoller(
                 self.indexer_url, self.indexer_user, self.indexer_pass,
-                verify=self.verify, cursor_file="/dev/null")
+                verify=self.verify, cursor_file="/dev/null", dedupe=False)
             self.raw_alerts = poller.fetch_raw(limit=200)
         except Exception as e:                          # noqa: BLE001
             self.record("alerts", FAIL, f"query failed: {e}")
@@ -249,17 +259,25 @@ class Doctor:
             return False
 
         from .engine import ITDREngine
+        from .wazuh import AuthEventDeduper
         from .wazuh_detections import combined_checkers
 
+        # Replay through the same dedupe the live poller applies, or the
+        # report overstates volume: one login can arrive as 5715 + 5501.
+        deduper = AuthEventDeduper()
         fired: list = []
         engine = ITDREngine(checkers=combined_checkers(),
                             on_alert=fired.append)
         for ev in sorted(mapped, key=lambda e: e.ts):
-            engine.process_event(ev)
+            if not deduper.is_duplicate(ev):
+                engine.process_event(ev)
 
         s = engine.stats
         detail = (f"{s['events']} events -> {s['detections']} detections, "
                   f"{s['alerts']} alerts")
+        if deduper.collapsed:
+            detail += (f" ({deduper.collapsed} duplicate alert(s) collapsed "
+                       "— one login can fire several Wazuh rules)")
         self.record("detection", PASS if s["detections"] else WARN, detail)
 
         if not s["detections"]:
