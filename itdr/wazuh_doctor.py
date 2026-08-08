@@ -40,18 +40,13 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 
-# Stock Wazuh ships a self-signed certificate, so verify_tls=False is the
-# normal lab configuration and urllib3 warns on every single request —
-# five copies of a nine-line warning drown the report. The downgrade is
-# already stated in the config line and the README; silence the repeats.
-try:
-    import urllib3
-    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-except Exception:                                       # noqa: BLE001
-    pass
+
 
 from .wazuh import (WazuhAPIClient, WazuhAPIError, WazuhIndexerPoller,
-                    _classify, _wazuh_user, alert_agent, map_wazuh_alert)
+                    _classify, _wazuh_user, alert_agent, map_wazuh_alert,
+                    silence_tls_warnings)
+
+silence_tls_warnings()
 
 console = Console()
 
