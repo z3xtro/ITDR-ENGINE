@@ -74,15 +74,20 @@ class Doctor:
 
     # -- 1 ---------------------------------------------------------------
     def check_config(self) -> bool:
-        missing = []
+        # Only the Indexer is required. The manager API is used for agent
+        # inventory and Active Response containment — useful, but not
+        # needed to ingest and detect, so its absence must not block a
+        # run that would otherwise work.
         if not self.indexer_pass:
-            missing.append("WAZUH_INDEXER_PASSWORD")
-        if not self.api_pass:
-            missing.append("WAZUH_API_PASSWORD")
-        if missing:
-            self.record("config", FAIL,
-                        f"missing: {', '.join(missing)}")
+            self.record("config", FAIL, "missing: WAZUH_INDEXER_PASSWORD")
             return False
+        if not self.api_pass:
+            self.record("config", WARN,
+                        f"indexer={self.indexer_url} — no "
+                        "WAZUH_API_PASSWORD, so agent inventory and "
+                        "containment checks will be skipped (ingestion "
+                        "and detection do not need it)")
+            return True
         self.record("config", PASS,
                     f"indexer={self.indexer_url} api={self.api_url} "
                     f"verify_tls={self.verify}")
@@ -122,6 +127,11 @@ class Doctor:
 
     # -- 3 ---------------------------------------------------------------
     def check_manager(self) -> Optional[WazuhAPIClient]:
+        if not self.api_pass:
+            self.record("manager", WARN,
+                        "skipped — WAZUH_API_PASSWORD not set (needed "
+                        "only for agent inventory and containment)")
+            return None
         try:
             client = WazuhAPIClient(self.api_url, self.api_user,
                                     self.api_pass, verify=self.verify)
@@ -140,7 +150,8 @@ class Doctor:
     # -- 4 ---------------------------------------------------------------
     def check_agents(self, client: Optional[WazuhAPIClient]) -> bool:
         if client is None:
-            self.record("agents", FAIL, "skipped — no manager connection")
+            status = WARN if not self.api_pass else FAIL
+            self.record("agents", status, "skipped — no manager connection")
             return False
         try:
             agents = client.agents(status="active")
