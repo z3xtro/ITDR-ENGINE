@@ -285,6 +285,13 @@ h1 .dot{display:inline-block;width:7px;height:7px;border-radius:50%;
   background:var(--s2);margin-right:8px;vertical-align:middle}
 .meta{color:var(--ink3);font-size:12px;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.badge{font-size:10px;font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;padding:3px 8px;border-radius:999px;
+  vertical-align:middle;margin-left:6px}
+.badge.live{background:color-mix(in srgb,var(--s2) 18%,transparent);
+  color:var(--s2)}
+.badge.demo{background:color-mix(in srgb,var(--ink3) 16%,transparent);
+  color:var(--ink2)}
 .grid-tiles{display:grid;gap:12px;margin-bottom:14px;
   grid-template-columns:repeat(auto-fit,minmax(150px,1fr))}
 .card{background:var(--surface);border:1px solid var(--line);
@@ -360,6 +367,11 @@ footer{margin-top:22px;color:var(--ink3);font-size:11.5px;
 
 
 def render_page(st: dict, title="ITDR Console") -> str:
+    # A published page showing fabricated alerts as though they were a
+    # real environment would misrepresent it. Demo renders say so.
+    live = st.get("source") == "wazuh-indexer"
+    badge = ('<span class="badge live">live · wazuh</span>' if live
+             else '<span class="badge demo">demo data</span>')
     tiles = [
         ("Critical", st["critical"], "open containment-eligible", True),
         ("Notable", st["notable"], "analyst review", False),
@@ -402,7 +414,7 @@ def render_page(st: dict, title="ITDR Console") -> str:
 
     return f"""<div class="wrap">
 <header>
-  <h1><span class="dot"></span>{_esc(title)}</h1>
+  <h1><span class="dot"></span>{_esc(title)} {badge}</h1>
   <div class="meta">identity threat detection &amp; response · updated
     {_esc(st['generated'])}</div>
 </header>
