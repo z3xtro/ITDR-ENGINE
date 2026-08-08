@@ -33,7 +33,12 @@ After=network-online.target
 Type=simple
 User=wazuh-user
 WorkingDirectory=/home/wazuh-user/ITDR-ENGINE
-EnvironmentFile=/etc/itdr-console.env
+# The leading '-' makes a missing file non-fatal. Without it, systemd
+# refuses to start the unit and logs NOTHING to the unit journal — you
+# get "Result: resources" and `journalctl -u` shows "No entries", which
+# is close to undiagnosable. With it, the service starts and Python
+# exits with a readable message naming the variable it needs.
+-EnvironmentFile=/etc/itdr-console.env
 ExecStart=/usr/bin/env python3.11 -m itdr.dashboard --live --hours 24 --interval 60 --port 8080
 
 Restart=always
