@@ -82,6 +82,16 @@ def alert_from_itdr(a: ITDRAlert) -> dict:
         "message": "targeted identity",
         "tags": ["itdr", "identity"]})
 
+    # Prefer the full analyst dossier as the alert body: an analyst
+    # opening the case should get the timeline, the ATT&CK context, the
+    # response playbook and the benign explanations to rule out — not a
+    # table they then have to interpret from scratch.
+    try:
+        from .triage import dossier_for, render_markdown
+        description = render_markdown(dossier_for(a))
+    except Exception:                                   # noqa: BLE001
+        description = "\n".join(lines)
+
     return {
         "type": "itdr-session-risk",
         "source": "itdr-engine",
@@ -90,7 +100,7 @@ def alert_from_itdr(a: ITDRAlert) -> dict:
         "sourceRef": f"itdr-{a.id}-{a.session_id}",
         "title": f"[ITDR/{a.tier}] {a.user_id}: "
                  + " + ".join(d.checker for d in a.detections),
-        "description": "\n".join(lines),
+        "description": description,
         "severity": _SEVERITY.get(a.tier, 2),
         "tags": sorted(tags),
         "observables": observables,

@@ -71,10 +71,13 @@ def test_placeholder_ip_is_not_an_observable():
 
 
 def test_description_lists_every_detection():
+    # The body is now the full triage dossier rather than a bare table,
+    # so it names detections by checker id and carries response guidance.
     desc = alert_from_itdr(make_alert())["description"]
-    assert "Impossible Travel" in desc
-    assert "Session Context Mutation" in desc
+    assert "impossible_travel" in desc
+    assert "session_mutation" in desc
     assert "118.5" in desc
+    assert "Next actions" in desc
 
 
 # ------------------------------------------------------ fake transport --
