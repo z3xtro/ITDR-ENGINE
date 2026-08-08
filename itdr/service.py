@@ -59,8 +59,14 @@ def build_engine() -> tuple[ITDREngine, SOARResponder]:
         log.info("TheHive SOAR bridge active (%s)",
                  bridge.client.base)
 
+    # Bounded ring of recent alerts for the console. Bounded because a
+    # long-running service must not accumulate alerts forever.
+    from collections import deque
+    recent_alerts: deque = deque(maxlen=500)
+
     def on_alert(alert):
         log.warning("ALERT %s", alert.summary())
+        recent_alerts.append(alert)
         # Containment first, case management second: a dead TheHive
         # must never delay revoking a hijacked session.
         before = len(responder.actions)
@@ -81,6 +87,14 @@ def build_engine() -> tuple[ITDREngine, SOARResponder]:
 
     engine = ITDREngine(on_alert=on_alert, store=build_store(),
                         checkers=checkers)
+
+    if os.environ.get("DASHBOARD", "true").lower() != "false":
+        from .dashboard import DashboardServer
+        dash = DashboardServer(
+            engine=engine, responder=responder, alerts=recent_alerts,
+            port=int(os.environ.get("DASHBOARD_PORT", "8080")))
+        dash.start()
+        log.info("console: http://0.0.0.0:%d", dash.port)
     if os.environ.get("METRICS", "true").lower() != "false":
         from .metrics import start_metrics_server
         port = int(os.environ.get("METRICS_PORT", "9108"))
