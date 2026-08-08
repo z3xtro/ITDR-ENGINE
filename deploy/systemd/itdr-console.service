@@ -46,7 +46,11 @@ SyslogIdentifier=itdr-console
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
-ProtectHome=read-only
+# ProtectHome is deliberately off: the service reads its dependencies
+# from ~/.local (pip install --user) and writes its polling cursor into
+# the checkout. Combining ProtectHome with ReadWritePaths here is a
+# common way to get an opaque permission failure at startup.
+ProtectHome=false
 ReadWritePaths=/home/wazuh-user/ITDR-ENGINE
 ProtectKernelTunables=true
 ProtectControlGroups=true
