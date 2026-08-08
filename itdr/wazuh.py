@@ -42,10 +42,11 @@ import hmac
 import json
 import logging
 import threading
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Callable, Iterator, Optional
+from typing import Callable, Deque, Iterator, Optional
 
 from .models import AuthEvent, EventResult, EventType
 
@@ -236,6 +237,44 @@ def map_wazuh_alert(rec: dict) -> Optional[AuthEvent]:
     )
 
 
+class AuthEventDeduper:
+    """Collapse the several alerts Wazuh fires for one logical login.
+
+    A single SSH login trips both rule 5715 (sshd: authentication
+    success) and rule 5501 (PAM: login session opened) within the same
+    second — and on some configurations 5502/5715 pairs too. They are
+    genuinely distinct rules, but they describe ONE authentication, and
+    counting them separately inflates everything downstream: risk scores
+    double, brute-force windows fill twice as fast, and a quiet host
+    looks twice as busy as it is.
+
+    Observed on a live manager: nine mapped alerts represented five
+    actual logins (6x 5501 + 3x 5715).
+
+    Two events collapse when they share user, endpoint, event type and
+    result, and land within `window_s` of each other. Distinct actions —
+    a failure then a success, a login then a sudo — never collapse,
+    because the type/result is part of the key.
+    """
+
+    def __init__(self, window_s: float = 2.0, maxlen: int = 1024):
+        self.window_s = window_s
+        self._seen: Deque[tuple[float, tuple]] = deque(maxlen=maxlen)
+        self.collapsed = 0
+
+    def is_duplicate(self, ev: AuthEvent) -> bool:
+        key = (ev.user_id, ev.session_id, ev.event_type, ev.event_result)
+        now = ev.ts
+        while self._seen and now - self._seen[0][0] > self.window_s:
+            self._seen.popleft()
+        for ts, k in self._seen:
+            if k == key and abs(now - ts) <= self.window_s:
+                self.collapsed += 1
+                return True
+        self._seen.append((now, key))
+        return False
+
+
 def alert_agent(rec: dict) -> str:
     """Agent name for a raw alert — needed by the host-native detectors,
     which correlate per endpoint and can't recover it from AuthEvent."""
@@ -327,7 +366,14 @@ class WazuhAPIClient:
         return resp.json() if resp.content else {}
 
     def manager_info(self) -> dict:
-        return (self._request("GET", "/manager/info").get("data") or {})
+        data = (self._request("GET", "/manager/info").get("data") or {})
+        # Wazuh 4.x wraps most responses in affected_items; older builds
+        # returned the fields inline. Handle both so the version doesn't
+        # silently render as '?'.
+        items = data.get("affected_items")
+        if isinstance(items, list) and items:
+            return items[0] or {}
+        return data
 
     def agents(self, status: str = "active") -> list[dict]:
         body = self._request("GET", f"/agents?status={status}&limit=500")
@@ -372,9 +418,11 @@ class WazuhIndexerPoller:
                  lookback_minutes: int = 15,
                  page_size: int = 500,
                  timeout: float = 30.0,
+                 dedupe: bool = True,
                  session=None):
         if session is None and not _REQUESTS:
             raise RuntimeError("pip install requests")
+        self.deduper = AuthEventDeduper() if dedupe else None
         self.base = url.rstrip("/")
         self.index = index
         self.verify = verify
@@ -448,7 +496,8 @@ class WazuhIndexerPoller:
                 if ts and ts > newest:
                     newest = ts
                 ev = map_wazuh_alert(src)
-                if ev:
+                if ev and not (self.deduper
+                               and self.deduper.is_duplicate(ev)):
                     yield ev
             if len(hits) < self.page_size:
                 break

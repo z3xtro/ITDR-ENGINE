@@ -313,10 +313,18 @@ class OffHoursAccessChecker:
     name = "off_hours_access"
 
     def __init__(self, start_hour: int = 8, end_hour: int = 20,
-                 weekend_is_off: bool = True):
+                 weekend_is_off: bool = True, max_tracked: int = 512):
         self.start_hour = start_hour
         self.end_hour = end_hour
         self.weekend_is_off = weekend_is_off
+        # (user, endpoint, local date) already reported. Without this the
+        # checker fires on EVERY login, and since a night shift is all
+        # off-hours it stacks ~11 risk points per login until a single
+        # weak signal crosses NOTABLE by itself. Observed on real data:
+        # nine logins produced nine identical detections and a spurious
+        # alert. Working outside business hours is one fact about a
+        # night, not one fact per login.
+        self._fired: Deque[tuple] = deque(maxlen=max_tracked)
 
     def check(self, ev: AuthEvent, session: SessionState,
               ctx: UserContext) -> Optional[Detection]:
@@ -331,6 +339,11 @@ class OffHoursAccessChecker:
         off_day = self.weekend_is_off and weekday >= 5
         if not (off_hour or off_day):
             return None
+
+        key = (ev.user_id, _agent_of(ev), ev.timestamp.date().isoformat())
+        if key in self._fired:
+            return None
+        self._fired.append(key)
 
         return Detection(
             checker=self.name,

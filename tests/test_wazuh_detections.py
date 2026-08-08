@@ -234,3 +234,75 @@ class TestPipelineIntegration:
         leak one deployment's history into another."""
         a, b = wazuh_checkers(), wazuh_checkers()
         assert a[0] is not b[0]
+
+
+class TestOffHoursDoesNotSelfEscalate:
+    """Regression: on a live manager, nine night-time logins produced
+    nine identical off_hours detections that stacked to a NOTABLE alert
+    on their own. A weak, compounding signal must never cross a tier by
+    repeating."""
+
+    def _night(self, offset, agent="web-01"):
+        return AuthEvent(
+            timestamp=datetime(2026, 8, 6, 23, 30, tzinfo=timezone.utc)
+            + timedelta(seconds=offset),
+            user_id="alice", session_id=f"wazuh:alice@{agent}",
+            client_ip="203.0.113.45", user_agent="sshd",
+            geo_country="??", geo_city="??",
+            event_type=EventType.LOGIN, event_result=EventResult.SUCCESS)
+
+    def test_fires_once_per_user_per_night(self):
+        c = OffHoursAccessChecker()
+        hits = run(c, [self._night(i * 60) for i in range(9)])
+        assert len(hits) == 1
+
+    def test_separate_endpoints_reported_separately(self):
+        c = OffHoursAccessChecker()
+        hits = run(c, [self._night(0, "web-01"), self._night(60, "db-01")])
+        assert len(hits) == 2
+
+    def test_repeated_night_logins_never_alert_alone(self):
+        alerts = []
+        engine = ITDREngine(checkers=wazuh_checkers(),
+                            on_alert=alerts.append)
+        for i in range(20):
+            engine.process_event(self._night(i * 60))
+        assert alerts == [], "off-hours alone escalated to an alert"
+
+
+class TestDuplicateAlertCollapse:
+    """One SSH login trips both 5715 (sshd success) and 5501 (PAM
+    session opened); counting both doubles every downstream number."""
+
+    def test_same_login_from_two_rules_counts_once(self):
+        from itdr.wazuh import AuthEventDeduper, map_wazuh_alert
+        base = {"timestamp": "2026-08-06T23:30:00.000+0000",
+                "agent": {"name": "wazuh-server"},
+                "predecoder": {"program_name": "sshd"},
+                "data": {"srcip": "203.0.113.45", "dstuser": "alice"}}
+        sshd = dict(base, rule={"id": "5715", "groups": []})
+        pam = dict(base, rule={"id": "5501", "groups": []})
+        d = AuthEventDeduper()
+        assert d.is_duplicate(map_wazuh_alert(sshd)) is False
+        assert d.is_duplicate(map_wazuh_alert(pam)) is True
+        assert d.collapsed == 1
+
+    def test_distinct_actions_are_not_collapsed(self):
+        from itdr.wazuh import AuthEventDeduper
+        d = AuthEventDeduper()
+        assert d.is_duplicate(ev(offset=0, result=EventResult.FAIL)) is False
+        assert d.is_duplicate(ev(offset=0.1)) is False      # fail vs success
+        assert d.is_duplicate(ev(offset=0.2,
+                                 etype=EventType.API_ACCESS)) is False
+
+    def test_same_action_outside_window_is_a_real_second_login(self):
+        from itdr.wazuh import AuthEventDeduper
+        d = AuthEventDeduper(window_s=2.0)
+        assert d.is_duplicate(ev(offset=0)) is False
+        assert d.is_duplicate(ev(offset=60)) is False
+
+    def test_different_users_never_collapse(self):
+        from itdr.wazuh import AuthEventDeduper
+        d = AuthEventDeduper()
+        assert d.is_duplicate(ev(user="alice", offset=0)) is False
+        assert d.is_duplicate(ev(user="bob", offset=0.1)) is False
