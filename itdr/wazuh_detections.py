@@ -44,7 +44,7 @@ into `UserContext` is the fix when it matters.
 from __future__ import annotations
 
 import time
-from collections import deque
+from collections import Counter, deque
 from typing import Deque, Optional
 
 from .models import (AuthEvent, Detection, EventResult, EventType,
@@ -74,36 +74,47 @@ class SSHBruteForceSuccessChecker:
     is noisy and common, but brute forcing that *succeeds* is a
     compromised credential, full stop.
 
-    Correlating on (user, source IP) rather than user alone is what keeps
-    this precise. A user fumbling their own password from their laptop
-    and then getting in is the same event shape; the difference is that
-    an attacker's burst is faster and larger, so the thresholds are set
-    above human-typo volume rather than trying to distinguish intent.
+    Correlation is keyed on the USER, with the source IP carried per
+    failed attempt. A naive (user, IP) key looks tighter but breaks on
+    real host telemetry: sshd failures (rule 5760/5716) carry the source
+    IP, but the matching SUCCESS is frequently logged by PAM (rule 5501,
+    "session opened"), which has no network context — so it arrives with
+    no IP and would never join the burst it belongs to. Observed on a
+    live manager: a genuine brute-force compromise produced the failures
+    and the success, and the two never correlated.
+
+    Precision is preserved a different way. When the success DOES carry a
+    real IP, it must match one the burst came from — a success from a
+    wholly different address is a coincidence, not the same actor. When
+    the success has no IP (the PAM case), the burst itself is the
+    evidence and the attacker IP is taken from the failures.
     """
     name = "ssh_bruteforce_success"
+
+    _PLACEHOLDER_IPS = {"0.0.0.0", ""}
 
     def __init__(self, fail_count: int = 5, window_s: float = 300.0,
                  success_grace: float = 120.0):
         self.fail_count = fail_count
         self.window_s = window_s
         self.success_grace = success_grace
-        # (user, ip) -> deque of fail timestamps
-        self._fails: dict[tuple[str, str], Deque[tuple]] = {}
+        # user -> deque of (fail timestamp, source ip)
+        self._fails: dict[str, Deque[tuple]] = {}
 
     def check(self, ev: AuthEvent, session: SessionState,
               ctx: UserContext) -> Optional[Detection]:
         if ev.event_type not in (EventType.LOGIN,):
             return None
-        key = (ev.user_id, ev.client_ip)
+        user = ev.user_id
 
         if ev.event_result is EventResult.FAIL:
-            w = self._fails.setdefault(key, deque(maxlen=256))
-            w.append((ev.ts,))
+            w = self._fails.setdefault(user, deque(maxlen=256))
+            w.append((ev.ts, ev.client_ip))
             _prune(w, ev.ts, self.window_s)
             return None
 
-        # SUCCESS: did a burst just precede it from this same source?
-        w = self._fails.get(key)
+        # SUCCESS: did a failed-password burst just precede it?
+        w = self._fails.get(user)
         if not w:
             return None
         _prune(w, ev.ts, self.window_s)
@@ -114,7 +125,23 @@ class SSHBruteForceSuccessChecker:
         if gap > self.success_grace:
             return None
 
-        self._fails.pop(key, None)      # consumed; don't re-alert
+        # Attribute a source IP. Prefer the success's own; otherwise the
+        # most common IP the failures came from.
+        burst_ips = [ip for _, ip in w if ip not in self._PLACEHOLDER_IPS]
+        succ_ip = (ev.client_ip if ev.client_ip not in self._PLACEHOLDER_IPS
+                   else None)
+        if succ_ip and burst_ips and succ_ip not in burst_ips:
+            # Success from an address the burst never touched — a
+            # different host getting in cleanly, not this attacker.
+            return None
+        if succ_ip:
+            source_ip = succ_ip
+        elif burst_ips:
+            source_ip = Counter(burst_ips).most_common(1)[0][0]
+        else:
+            source_ip = "0.0.0.0"
+
+        self._fails.pop(user, None)     # consumed; don't re-alert
         # Confidence ramp: 0.75 at the threshold, 1.0 by 15 failures.
         #
         # Calibrated against the risk model rather than picked by feel.
@@ -134,7 +161,7 @@ class SSHBruteForceSuccessChecker:
             mitre="T1110",
             evidence={
                 "user": ev.user_id,
-                "source_ip": ev.client_ip,
+                "source_ip": source_ip,
                 "endpoint": _agent_of(ev),
                 "failed_attempts": fails,
                 "window_s": self.window_s,

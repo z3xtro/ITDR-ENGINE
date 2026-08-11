@@ -98,6 +98,32 @@ class TestSSHBruteForceSuccess:
         events += [ev(offset=10), ev(offset=20), ev(offset=30)]
         assert len(run(c, events)) == 1
 
+    def test_pam_success_without_ip_still_correlates(self):
+        """Regression from live Wazuh: sshd failures (rule 5760) carry
+        the source IP, but the matching success is logged by PAM (rule
+        5501) with no network context, so it arrives as 0.0.0.0. Keying
+        on (user, IP) meant the burst and its own success never met, and
+        a real compromise only reached NOTABLE via auth_failure_burst."""
+        c = SSHBruteForceSuccessChecker(fail_count=5)
+        fails = [ev(offset=i, ip="192.168.1.76", result=EventResult.FAIL)
+                 for i in range(10)]
+        pam_success = ev(offset=12, ip="0.0.0.0")   # PAM 5501, no srcip
+        hits = run(c, fails + [pam_success])
+        assert len(hits) == 1
+        # The attacker IP is recovered from the failed attempts.
+        assert hits[0].evidence["source_ip"] == "192.168.1.76"
+
+    def test_pam_success_attack_chain_reaches_critical(self):
+        """The full live shape must clear CRITICAL, not stall at NOTABLE."""
+        alerts = []
+        engine = ITDREngine(checkers=wazuh_checkers(),
+                            on_alert=alerts.append)
+        for i in range(12):
+            engine.process_event(
+                ev(offset=i, ip="192.168.1.76", result=EventResult.FAIL))
+        engine.process_event(ev(offset=14, ip="0.0.0.0"))       # PAM success
+        assert any(a.tier == "CRITICAL" for a in alerts)
+
 
 class TestNewSourceIP:
     def test_quiet_during_learning_period(self):
