@@ -200,11 +200,26 @@ class TestPrivilegeEscalation:
                        ev(offset=4000, etype=EventType.API_ACCESS)])
         assert hits == []
 
-    def test_console_login_does_not_arm_the_detector(self):
+    def test_true_console_login_does_not_arm_the_detector(self):
+        """A real console login (program `login`, no IP) is local work,
+        not a network compromise — it must not arm."""
         c = PrivilegeEscalationChecker()
-        hits = run(c, [ev(offset=0, ip="0.0.0.0"),
-                       ev(offset=10, etype=EventType.API_ACCESS)])
+        hits = run(c, [ev(offset=0, ip="0.0.0.0", program="login"),
+                       ev(offset=10, etype=EventType.API_ACCESS,
+                          program="sudo")])
         assert hits == []
+
+    def test_pam_ssh_login_without_ip_still_arms(self):
+        """Regression: a successful SSH login logged by PAM (rule 5501)
+        carries no IP, but the program is sshd, so it is remote and must
+        arm the escalation detector. On live OVA data this was the only
+        success signal, and keying on IP alone left T1548 silent."""
+        c = PrivilegeEscalationChecker(window_s=300)
+        hits = run(c, [ev(offset=0, ip="0.0.0.0", program="sshd"),
+                       ev(offset=20, etype=EventType.API_ACCESS,
+                          program="sudo")])
+        assert len(hits) == 1
+        assert hits[0].mitre == "T1548"
 
 
 class TestOffHours:

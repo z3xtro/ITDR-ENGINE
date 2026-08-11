@@ -106,10 +106,12 @@ def benign_corpus(rng: random.Random) -> list[Scenario]:
         _ev("dave", "web-01", f"203.0.113.{40 + i}", i * 1800)
         for i in range(5)]))
 
-    # Admin who logs in and sudos — but from the console (no source IP),
-    # which must not arm the escalation detector.
+    # Admin who logs in at the physical console (program `login`, no
+    # source IP) and sudos. A true console session is local work and
+    # must not arm the escalation detector — unlike an SSH session,
+    # which is remote even when PAM omits the IP.
     s.append(Scenario("console_admin_sudo", False, [
-        _ev("erin", "web-01", "0.0.0.0", 0),
+        _ev("erin", "web-01", "0.0.0.0", 0, program="login"),
         _ev("erin", "web-01", "0.0.0.0", 45,
             etype=EventType.API_ACCESS, program="sudo")]))
 

@@ -147,17 +147,30 @@ def _classify(rec: dict) -> Optional[tuple[EventType, EventResult]]:
     return None
 
 
-def _wazuh_user(rec: dict) -> Optional[str]:
-    """Extract the acted-on account across decoder dialects.
+def _wazuh_user(rec: dict, prefer_actor: bool = False) -> Optional[str]:
+    """Extract the identity of interest across decoder dialects.
 
-    Linux decoders use data.dstuser (target) / data.srcuser (actor);
-    Windows Security puts it in data.win.eventdata.targetUserName.
+    For a LOGIN the identity is the account being logged INTO — the
+    target — so dstuser wins. For a privilege escalation (sudo/su) the
+    identity we track is the human who INVOKED it, not the root they
+    became; a sudo event logs dstuser=root, srcuser=alice, and taking
+    dstuser there maps every escalation to "root" and breaks the
+    correlation with the actor's own prior login. `prefer_actor` flips
+    the precedence for those events.
+
+    Found on live Wazuh: privilege_escalation never fired because the
+    sudo mapped as root while the login mapped as the real user, so the
+    two never met on the (user, endpoint) key.
     """
     data = rec.get("data") or {}
     win = ((data.get("win") or {}).get("eventdata") or {})
 
-    user = (data.get("dstuser") or win.get("targetUserName")
-            or data.get("srcuser") or win.get("subjectUserName"))
+    if prefer_actor:
+        user = (data.get("srcuser") or win.get("subjectUserName")
+                or data.get("dstuser") or win.get("targetUserName"))
+    else:
+        user = (data.get("dstuser") or win.get("targetUserName")
+                or data.get("srcuser") or win.get("subjectUserName"))
     if not user:
         return None
     user = str(user).strip()
@@ -226,7 +239,9 @@ def map_wazuh_alert(rec: dict) -> Optional[AuthEvent]:
         return None
     etype, result = classified
 
-    user = _wazuh_user(rec)
+    # sudo/su map to API_ACCESS; for those the identity is the invoker
+    # (srcuser), not the account escalated to.
+    user = _wazuh_user(rec, prefer_actor=(etype is EventType.API_ACCESS))
     if not user:
         return None
 

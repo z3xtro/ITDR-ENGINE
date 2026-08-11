@@ -287,12 +287,28 @@ class PrivilegeEscalationChecker:
     *recent remote* login — the sequence "got in from the network, then
     immediately became root" is the tail end of a compromise, whereas an
     admin who has been on the box for an hour is just working.
+
+    "Remote" is judged from the authenticating program, not just the
+    source IP. A successful SSH login is frequently recorded by PAM
+    (rule 5501, "session opened") with no IP in that record, so keying
+    on IP alone would treat a genuine network login as a console session
+    and never arm — which is exactly why this stayed silent on live OVA
+    data. A PAM/sshd session is remote; only a true console login
+    (program `login`/`tty`) is not.
     """
     name = "privilege_escalation"
+
+    # Programs that mean "the session came over the network."
+    _REMOTE_PROGRAMS = {"sshd", "ssh", "s[hd]", "dropbear"}
 
     def __init__(self, window_s: float = 300.0):
         self.window_s = window_s
         self._recent_login: dict[tuple[str, str], tuple[float, str]] = {}
+
+    def _is_remote(self, ev: AuthEvent) -> bool:
+        if ev.client_ip not in ("0.0.0.0", ""):
+            return True
+        return str(ev.user_agent).lower() in self._REMOTE_PROGRAMS
 
     def check(self, ev: AuthEvent, session: SessionState,
               ctx: UserContext) -> Optional[Detection]:
@@ -301,9 +317,12 @@ class PrivilegeEscalationChecker:
 
         if (ev.event_type is EventType.LOGIN
                 and ev.event_result is EventResult.SUCCESS):
-            # Only remote logins arm this; console logins have no source.
-            if ev.client_ip not in ("0.0.0.0", ""):
-                self._recent_login[key] = (ev.ts, ev.client_ip)
+            # Arm on network logins (by IP or by authenticating program);
+            # a true console login never does.
+            if self._is_remote(ev):
+                self._recent_login[key] = (
+                    ev.ts, ev.client_ip if ev.client_ip not in ("0.0.0.0", "")
+                    else "(via " + str(ev.user_agent) + ")")
             return None
 
         # sudo/su map to API_ACCESS (see itdr.wazuh._RULE_MAP)
