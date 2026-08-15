@@ -45,6 +45,7 @@ beyond the event model. It is unit-tested in isolation.
 from __future__ import annotations
 
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Callable, Iterable, Optional
@@ -56,6 +57,71 @@ from .models import AuthEvent, EventResult, EventType
 # credential paths in most environments turn over on roughly that scale
 # — tune per deployment.
 DEFAULT_HALF_LIFE_S = 7 * 24 * 3600
+
+# Blast-radius scoring weights. Root footholds and harvested identities
+# count for more than plain host access, because they are what let an
+# attacker keep pivoting. `SCALE` sets the diminishing-returns curve so a
+# lone compromise scores low and a fleet-wide one saturates near 100.
+W_HOST = 1.0          # a host the attacker can reach (login only)
+W_ROOT_HOST = 3.0     # a host where they gain root (a pivot point)
+W_IDENTITY = 2.0      # each additional identity they can harvest
+W_CROWN = 5.0         # bonus for reaching a designated crown-jewel node
+BLAST_SCALE = 8.0     # raw-score scale for the saturating curve
+
+# Only follow edges still fresh enough to be a usable path (decay gate).
+DEFAULT_MIN_WEIGHT = 0.1
+DEFAULT_MAX_DEPTH = 8
+
+
+def blast_band(index: int) -> str:
+    """Map a 0-100 blast index onto an analyst-legible band, matching the
+    engine's risk-tier feel."""
+    if index >= 75:
+        return "SEVERE"
+    if index >= 50:
+        return "HIGH"
+    if index >= 25:
+        return "MEDIUM"
+    return "LOW"
+
+
+@dataclass(slots=True)
+class Hop:
+    """One lateral-movement step in an attack path: `actor` uses root on
+    `host` to harvest `harvested`. This is the narrative that makes a
+    blast score explainable instead of a bare number."""
+    actor: str
+    host: str
+    harvested: str
+
+    def __str__(self) -> str:
+        return f"{self.actor} --root on {self.host}--> {self.harvested}"
+
+
+@dataclass(slots=True)
+class BlastRadius:
+    """What a compromised identity can reach, and how much it matters."""
+    identity: str
+    reachable_hosts: set = field(default_factory=set)
+    privileged_hosts: set = field(default_factory=set)   # subset, root there
+    reachable_identities: set = field(default_factory=set)  # excludes self
+    crown_jewels_hit: set = field(default_factory=set)
+    hops: list = field(default_factory=list)             # list[Hop]
+    index: int = 0
+    band: str = "LOW"
+    depth: int = 0
+
+    def summary(self) -> str:
+        bits = [f"blast {self.band} ({self.index})"]
+        if self.reachable_hosts:
+            bits.append(f"{len(self.reachable_hosts)} hosts")
+        if self.privileged_hosts:
+            bits.append(f"{len(self.privileged_hosts)} root")
+        if self.reachable_identities:
+            bits.append(f"{len(self.reachable_identities)} identities")
+        if self.crown_jewels_hit:
+            bits.append(f"reaches {', '.join(sorted(self.crown_jewels_hit))}")
+        return " · ".join(bits)
 
 
 class EdgeType(str, Enum):
@@ -223,3 +289,94 @@ class IdentityGraph:
             "root_edges": sum(1 for e in self._edges.values()
                               if e.etype is EdgeType.HAS_ROOT_ON),
         }
+
+    # ---------------------------------------------------- blast radius --
+
+    def _fresh(self, src: str, dst: str, etype: EdgeType,
+               min_weight: float) -> bool:
+        """Is this edge still recent enough to be a usable path?"""
+        return self.edge_weight(src, dst, etype) >= min_weight
+
+    def blast_radius(self, identity: str,
+                     crown_jewels: Optional[set] = None,
+                     min_weight: float = DEFAULT_MIN_WEIGHT,
+                     max_depth: int = DEFAULT_MAX_DEPTH) -> BlastRadius:
+        """Compute what a compromised identity can reach, the way an
+        attacker actually pivots.
+
+        The model, and why the two edge types play different roles:
+
+        - A LOGIN edge spreads *hosts*: if you are this identity, you can
+          reach every host it has authenticated to.
+        - A ROOT edge spreads *identities*: root on a host lets you
+          harvest the credentials/sessions of every OTHER account seen on
+          that host, so those identities become compromised too — and
+          their hosts and root footholds extend the frontier.
+
+        Breadth-first to a fixpoint (bounded by max_depth), following only
+        edges still fresh enough to be usable (the decay gate). The result
+        carries the reachable set, the ordered lateral-movement hops for
+        explainability, and a saturating 0-100 index.
+        """
+        crown = crown_jewels or set()
+        br = BlastRadius(identity=identity)
+        compromised = {identity}
+        # BFS frontier of (identity, depth)
+        frontier: deque = deque([(identity, 0)])
+
+        while frontier:
+            who, depth = frontier.popleft()
+            br.depth = max(br.depth, depth)
+
+            # hosts this identity can log into -> direct reach
+            for host in self.hosts_for(who):
+                if self._fresh(who, host, EdgeType.AUTHENTICATED_TO,
+                               min_weight):
+                    br.reachable_hosts.add(host)
+
+            if depth >= max_depth:
+                continue
+
+            # hosts where this identity is root -> pivot to co-located accts
+            for host in self.root_hosts_for(who):
+                if not self._fresh(who, host, EdgeType.HAS_ROOT_ON,
+                                   min_weight):
+                    continue
+                br.reachable_hosts.add(host)
+                br.privileged_hosts.add(host)
+                for other in self.identities_on(host):
+                    if other in compromised:
+                        continue
+                    if not self._fresh(other, host,
+                                       EdgeType.AUTHENTICATED_TO, min_weight):
+                        continue
+                    compromised.add(other)
+                    br.reachable_identities.add(other)
+                    br.hops.append(Hop(who, host, other))
+                    frontier.append((other, depth + 1))
+
+        br.crown_jewels_hit = crown & (br.reachable_hosts
+                                       | br.reachable_identities)
+        br.index = self._blast_index(br)
+        br.band = blast_band(br.index)
+        return br
+
+    @staticmethod
+    def _blast_index(br: BlastRadius) -> int:
+        """Saturating 0-100 score. Diminishing returns so a lone
+        compromise scores low and fleet-wide reach approaches 100 without
+        ever exceeding it."""
+        non_priv_hosts = len(br.reachable_hosts) - len(br.privileged_hosts)
+        raw = (W_HOST * non_priv_hosts
+               + W_ROOT_HOST * len(br.privileged_hosts)
+               + W_IDENTITY * len(br.reachable_identities)
+               + W_CROWN * len(br.crown_jewels_hit))
+        if raw <= 0:
+            return 0
+        # 1 - 0.5**(raw/scale): 0 at raw 0, ~0.5 at raw=scale, ->1.
+        return round(100 * (1 - 0.5 ** (raw / BLAST_SCALE)))
+
+    def attack_path(self, identity: str, **kw) -> list:
+        """Just the ordered lateral-movement hops for a compromised
+        identity — the 'how it spreads' narrative."""
+        return self.blast_radius(identity, **kw).hops

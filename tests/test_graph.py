@@ -155,3 +155,100 @@ class TestHygiene:
         assert g.hosts_for("nobody") == set()
         assert g.root_hosts_for("nobody") == set()
         assert g.identities_on("nowhere") == set()
+
+
+class TestBlastRadius:
+    """Step 2: reachability walk, attack path, and the 0-100 index."""
+
+    def _chain_graph(self):
+        """alice: root on web-01. bob: on web-01, root on db-01.
+        carol: on db-01. dave: isolated on app-01."""
+        g = IdentityGraph()
+        g.observe(ev("alice", "web-01", etype=EventType.API_ACCESS))
+        g.observe(ev("bob", "web-01"))
+        g.observe(ev("bob", "db-01", etype=EventType.API_ACCESS))
+        g.observe(ev("carol", "db-01"))
+        g.observe(ev("dave", "app-01"))
+        return g
+
+    def test_lone_compromise_scores_low(self):
+        g = IdentityGraph()
+        g.observe(ev("dave", "app-01"))
+        br = g.blast_radius("dave")
+        assert br.reachable_hosts == {"app-01"}
+        assert br.reachable_identities == set()
+        assert br.band == "LOW"
+
+    def test_pivot_chain_reaches_everything(self):
+        """alice compromises web-01 (root) -> harvests bob -> db-01 (root)
+        -> harvests carol. dave stays out of reach."""
+        br = self._chain_graph().blast_radius("alice")
+        assert br.reachable_hosts == {"web-01", "db-01"}
+        # root on web-01 directly, AND db-01 via harvested bob — the
+        # attacker inherits every root foothold along the path.
+        assert br.privileged_hosts == {"web-01", "db-01"}
+        assert br.reachable_identities == {"bob", "carol"}
+        assert "app-01" not in br.reachable_hosts
+        assert "dave" not in br.reachable_identities
+
+    def test_attack_path_is_the_lateral_movement_narrative(self):
+        hops = self._chain_graph().attack_path("alice")
+        as_str = [str(h) for h in hops]
+        assert "alice --root on web-01--> bob" in as_str
+        assert "bob --root on db-01--> carol" in as_str
+
+    def test_reach_grows_the_score(self):
+        g = self._chain_graph()
+        assert g.blast_radius("alice").index > g.blast_radius("dave").index
+
+    def test_index_is_bounded_0_100(self):
+        g = IdentityGraph()
+        # a hub identity with root on many hosts, each full of accounts
+        for h in range(20):
+            g.observe(ev("root-svc", f"h{h}", etype=EventType.API_ACCESS))
+            for u in range(10):
+                g.observe(ev(f"u{h}_{u}", f"h{h}"))
+        br = g.blast_radius("root-svc")
+        assert 0 <= br.index <= 100
+        assert br.band == "SEVERE"
+
+    def test_crown_jewel_reach_raises_the_score(self):
+        g = self._chain_graph()
+        plain = g.blast_radius("alice").index
+        crowned = g.blast_radius("alice", crown_jewels={"db-01"}).index
+        assert crowned > plain
+
+    def test_non_root_login_spreads_hosts_not_identities(self):
+        """Reaching a host by login lets you use it, but only ROOT lets
+        you harvest the other accounts on it."""
+        g = IdentityGraph()
+        g.observe(ev("alice", "shared"))    # login only, no root
+        g.observe(ev("bob", "shared"))
+        br = g.blast_radius("alice")
+        assert br.reachable_hosts == {"shared"}
+        assert br.reachable_identities == set()   # cannot harvest bob
+
+    def test_stale_edges_do_not_extend_reach(self):
+        """A path too old to be usable (decayed below the gate) is not
+        counted — blast radius reflects live reach, not history."""
+        clock = {"t": BASE.timestamp()}
+        g = IdentityGraph(now_fn=lambda: clock["t"])
+        g.observe(ev("alice", "web-01", etype=EventType.API_ACCESS))
+        g.observe(ev("bob", "web-01"))
+        # bob's login goes stale; alice's root stays fresh (re-observed)
+        clock["t"] = BASE.timestamp() + DEFAULT_HALF_LIFE_S * 5
+        g.observe(ev("alice", "web-01", offset=DEFAULT_HALF_LIFE_S * 5,
+                     etype=EventType.API_ACCESS))
+        br = g.blast_radius("alice")
+        assert "web-01" in br.reachable_hosts
+        assert "bob" not in br.reachable_identities   # bob's edge decayed
+
+    def test_cycle_terminates(self):
+        """Mutual root (a can harvest b, b can harvest a) must not loop."""
+        g = IdentityGraph()
+        g.observe(ev("a", "h1", etype=EventType.API_ACCESS))
+        g.observe(ev("b", "h1"))
+        g.observe(ev("b", "h2", etype=EventType.API_ACCESS))
+        g.observe(ev("a", "h2"))
+        br = g.blast_radius("a")   # must return, not hang
+        assert br.reachable_identities == {"b"}
